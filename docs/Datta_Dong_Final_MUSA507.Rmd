@@ -1,0 +1,1409 @@
+---
+title: "MUSA507 Final: Seattle Parking FactFinder"
+author: "Sagari Datta and Shuchang Dong"
+date: "December 21, 2018"
+output: 
+  html_document:
+    toc: true
+    
+    toc_float: 
+      collapsed: false
+      smooth_scroll: true
+      include: FALSE
+      
+    code_folding: show
+
+---
+
+###1. Introduction
+Seattle is currently facing a challenge of oversupply of parking spaces. Complaints have been made by local residents stating that the amount of available parking spaces is in excess of the actual need [see details here](https://www.seattlebikeblog.com/2015/02/19/yes-seattle-has-a-parking-problem-theres-way-too-much-of-it/). The annual parking report of Seattle indicates that there are a total of 13,544 parking spaces in the city and that the average parking occupancy rate during rush hour is 77.8%. Note that the study area was mostly within downtown Seattle, which means that parking spaces even in the busiest neighborhood during the busiest time periods were not being not fully occupied. We examined various factors that might affect the occupancy rates of street parking spaces and found that street parking often varied with land use. For example, the occupancy rate in a multi-family residential area is higher than it is for a commercial use neighborhood (see map below).
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+#basic setup
+#rm(list = ls())
+getwd()
+setwd("C:/Users/Sagari/Desktop")
+getwd()
+```
+
+<center>
+
+![Annual Average Occupancy Rate by Land Use Type](/Users/Sagari/Desktop/ParkingOccupancyMap.jpg)
+
+</center>
+<br>
+
+City planners should consider the complaints related to excess parking when making plans for a neighborhood or for the city as a whole. Currently, there is no convenient way for planners to know how the parking requirements change when a certain area's land use changes. Neither is there a way for planners to know which area local residents generally consider as having an oversupply of parking spaces. The Seattle Parking FactFinder application is designed to meet this challenge by predicting the occupancy rates for different land uses taking into account rush (peak) hour. Local city residents can use the app to check if the parking spaces in their street or neighborhood are being under or over-utilized by comparing the predicted values with the current occupancy rates. They can also make evaluations on whether they consider any street segment to have excessive or insufficient parking spaces, using the parking evaluation feature. This feature allows users to record a perception score i.e., their perception on whether parking spaces are excessive or not in any particular street segment. For planners, the app serves as an extremely convenient tool that they can use to check how parking demand varies with changes in land use type. Moreover, the app's parking evaluation tool can provide vital information to planners about local residents' satisfaction with the current parking situation which in turn can help them implement wiser strategies.
+
+<br><br>
+
+###2. Data
+All of the data used in this project was downloaded from the Seattle Open Data [website](https://data.seattle.gov/) except the census data which was downloaded using the Tidycensus package in R. The datasets used in this study have been listed below.
+
+1. Seattle Annual Parking Study 
+2. Zoning/Land Use 
+3. Streets 
+4. Land parcels
+5. Neighborhoods
+6. Subway stations
+7. Building data
+8. Traffic detectors
+9. Census tract data related to car ownership/commute
+
+The annual parking study data that was available on the Seattle Open Data website did not cover the whole city. So our study area was restricted to the downtown area and a couple of other neighborhoods in Seattle (see map below). 
+
+<center>
+
+![Study Area Locations in Seattle](/Users/Sagari/Desktop/StudyArea.jpg)
+
+</center>
+<br>
+
+The street data was joined with the zoning, land parcel, building, subway, traffic detectors and census tract datasets. This combined dataset was then joined with the annual parking study data. The original annual parking study data was not geocoded and the geometry of the street dataset was used to geocode the parking study data. The unit of analysis considered for this project is the street segment (taking into account both sides of the street). Given the size of the datasets, ArcGIS was used to join most of the data and to generate maps of the different variables.  
+
+
+In order to join the street segments with the other datasets, a half-block (167 feet) buffer was first created around each street segment. For continuous variables, the average of the values falling within the street segment was computed and included as the final variable value for each street segment - for instance, the average height of buildings within a street segment. For all the categorical variables, the value that either intersected or was the closest to each street segment was included.
+
+<br><br>
+
+###3. Exploratory Data Analysis
+The variable being predicted is the parking occupancy rate for each street segment which was calculated by dividing the average daily vehicle count in each street segment by the total parking spaces in each street segment. 
+
+Occupancy Rate = Average daily vehicle count / Total parking spaces
+
+The distribution of the occupancy rate was somewhat normal. However, the log-transformed values were used for the regression analysis. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+load("C:/Users/Sagari/Desktop/final_environment2.RData")
+
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+#load library
+library(knitr)
+library(kableExtra)
+library(corrplot)
+library(caret) 
+library(AppliedPredictiveModeling)
+library(stargazer)
+library(tidyverse)
+library(sf)
+library(FNN)
+library(tigris)
+library(tidycensus)
+library(rgdal)
+library(lwgeom)
+library(FNN)
+library(spdep)
+library(dplyr)
+library(leaflet)
+library(gridExtra)
+options(scipen=999)
+
+```
+<br>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.align='center'}
+#plot occupancy rate
+hist_or <- ggplot(final16, aes(occupancyRate)) + geom_histogram(bins=100, alpha =.6,color="skyblue4", fill="skyblue3") +
+  labs(title = "Histogram of Observed Parking Occupancy Rates",
+    x="Occupancy Rate",
+       y="Count")
+hist_or + theme(legend.position="none") + 
+  theme(plot.title = element_text(hjust = 0.5))+
+  theme(panel.background = element_rect(fill = "grey99",
+                                colour = "gray100",
+                                size = 0.5, linetype = "solid"),
+  panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "white"), 
+  panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "white"))
+
+```
+<br>
+As part of the exploratory data analysis, the relationships between different variables in the datasets downloaded were examined. Since the prediction is based on whether the occupancy rates change with land-use changes, built environment variables were mainly considered for the analysis.
+
+<br><br>
+<center>
+
+![Datasets and features explored](/Users/Sagari/Desktop/VarMapsGIS.jpg)
+
+</center>
+
+From the maps it can be seen that the areas with taller building seem to have fewer street parking spaces. This is perhaps due to the availability of off-street parking in taller buildings. The further one moves away from the city center, the smaller the height of the building and greater the availability of street parking. Moreover, census tracts with high car ownership seem to be clustered in the downtown area. Finally, most of the land-use by street segment in the downtown area relates to commercial/business land-use type.
+
+<br><br>
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+#Scatterplot of independent variables
+SegmentLength <- data.frame(X = final16$seg_length, Y = final16$occupancyRate) %>%
+  mutate(title = "Segment Length")
+PayCountStation <- data.frame(X = final16$pay_count, Y = final16$occupancyRate) %>%
+  mutate(title = "Pay Count Station")
+DistanceToSubway <- data.frame(X = final16$dist_detect, Y = final16$occupancyRate) %>%
+  mutate(title = "Distance To Subway")
+AverageHeight <- data.frame(X = final16$average_height, Y = final16$occupancyRate) %>%
+  mutate(title = "Average Height")
+TotalCarOwnership <- data.frame(X = final16$total_car_owner, Y = final16$occupancyRate) %>%
+  mutate(title = "Total Car Ownership")
+Pavement <- data.frame(X = final16$pavementcon, Y = final16$occupancyRate) %>%
+  mutate(title = "Pavement")
+
+```
+
+
+
+```{r fig.align='center', message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+#rbind scatterplot variables
+indScatter <- rbind(SegmentLength,PayCountStation, DistanceToSubway, AverageHeight, TotalCarOwnership, Pavement)
+#plot
+scatterPlotInd <- ggplot(indScatter, aes(X, Y, group=X)) + 
+  geom_point(aes(fill=X), alpha=.2, color="skyblue4", size=1.5) +
+  stat_smooth(method = "lm", se = FALSE, size =1, color = "grey69") +
+  facet_wrap(~title,scales="free",ncol=2)
+   labs(title = "Scatterplot showing relationship between dependent variable and \nexplanatory variables",
+     x="Predictors",
+       y="Occupancy Rate")
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.align='center', fig.height=10, fig.width=12}
+scatterPlotInd + labs(title = "Scatterplots showing relationship between dependent variable and \nexplanatory variables",
+     x="Predictors",
+       y="Occupancy Rate")+
+  theme(legend.position="none") + 
+  theme(plot.title = element_text(hjust = 0.5, size=16)) +
+  theme(panel.background = element_rect(fill = "grey99",
+                                colour = "gray100",
+                                size = 0.5, linetype = "solid"),
+  panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "white"), 
+  panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "white"))
+```
+
+<br><br>
+The scatterplot above shows the relationship between some of the explanatory variables considered in our analysis and the parking occupancy rate (dependent variable). As can be seen from the plot, there does not seem to be any obvious linear patterns in the relationships. However, there does seem to be some kind of association between occcupancy rate and average building height, street segment length and distance to subway stations. Moreover, many of the continous variables look like categorical variables in the scatterplot due to scale differences. For instance car-ownership as determined from the census data is at a larger scale (census block group) than occupancy rate which is at the street segment level. The scale differences of the variables were one of the main challenges we had to grapple with in this project. 
+
+<br>
+<center>
+<font size="5">Correlation Matrix</font>
+</center>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.align='left'}
+indVar <- data.frame(final16$seg_length, final16$pay_count, final16$average_height, final16$total_car_owner,
+                     final16$pavementcon, final16$dist_detect) 
+colnames(indVar) <- c("segLen", "PaySt", "BlgHt", "CarOwn", 
+                      "PavLen", "SubDist" )
+corOutput<-cor(indVar)
+#corrplot.mixed(corOutput, lower = "number", upper = "ellipse")
+corrplot(corOutput, order = "hclust",  col = gray.colors(100))
+
+```
+
+<br>
+
+The correlation matrix of the continuous explanatory variables show that most of the variables are not severely correlated with each other. However, there seems to be some correlation between car-ownership (by census tract) and building height. This validates what was found when examining the maps of these variables i.e., car-ownership and tall buildings are concentrated in the downtown area
+
+A couple of variables considered in the regression analysis were feature engineered. One such feature was the time variable for rush hours i.e., peak period. According to the Seattle parking report, the main peak period for parking demand was between 11am and 3pm. Therefore, a separate binary variable was created where 1 = peak period between 11am and 3pm and 0 = all other time periods. Note: we had trouble using the 'lubridate' package to extract time because we were summarizing the street segments and couldn't find a meaningful way to summarize the time stamps directly. Therefore we created a separate binary variable for rush hour. The rush hour variable was considered as a predictor in the regression analysis to account for that part of the variation in occupancy rate  that was time dependent. The zoning code variable was also regrouped into industrial, commercial, mixed-use and building height zoning sub-group types. There weren't that many residential areas in the study area since the parking study was done mainly in Downtown Seattle. Therefore, a separate grouping for residential zoning was not considered.
+
+<br><br>
+
+```{r echo=FALSE, fig.align='center', message=FALSE, warning=FALSE, paged.print=FALSE}
+histRush <- data.frame(final16$rush, final16$occupancyRate)
+colnames(histRush) <- c("Rush_Hour", "Observed_Occupancy_Rate")
+rushPlot  <- ggplot(histRush, aes(Rush_Hour, Observed_Occupancy_Rate)) +
+  geom_col(fill="skyblue4", alpha = 0.5, width = .5)+
+  labs(title = "Histogram of Observed Occupancy Rates During Rush Hours\nand Non-rush Hours")
+rushPlot  + theme(legend.position="none") +
+  theme(plot.title = element_text(hjust = 0.5))+
+  theme(panel.background = element_rect(fill = "grey99",
+                                colour = "gray100",
+                                size = 0.5, linetype = "solid"),
+  panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "white"), 
+  panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "white"))
+
+
+
+```
+
+  
+<br>
+
+The variables considered for the regression analysis have been tabulated below.
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+indVarExp <- read.csv("Book1.csv")
+
+kable(indVarExp) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), position = "center") %>%
+   row_spec(c(1:4), bold = F, color = "white", background = "#242D49") %>%
+  row_spec(c(5:5), bold = F, color = "white", background = "#BEC0CA") %>%
+  row_spec(c(6:10), bold = F, color = "white", background = "#A4A8B5") 
+  
+  
+```
+
+
+
+<br><br>
+
+###4. Regression and Model Validation
+The Ordinary Least Squares (OLS) method was used to run the regression analysis. The dependent variable (occupancy rate) and one of the explanatory variables (average building height) were log-transformed since it helped make their distributions more normal.
+
+Two types of regression analyses were performed. The first regression run was a predictive model where the goal was to maximize the predictive power of the model by focusing on improving the regression fit (as measured by the R-squared value) and minimizing the error of the model i.e., the Mean Square Error (MAE) and the Mean Absolute Percent Error (MAPE). The values predicted by the model for each street segment will then be used in the app as the predicted occupancy rates for each street segment. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+reg1 <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + zoning_code + nation_highway + street_type + rush + pay_count + dist_detect + detect_id + trd, data=final16)
+
+```
+
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+errorDFmodel1 <- data.frame(final16$occupancyRate) 
+colnames(errorDFmodel1) <- c("Observed_OR") 
+errorDFmodel1 <- errorDFmodel1 %>%
+  mutate(fitted = reg1$fitted.values) %>%
+   filter(Observed_OR != 0) 
+
+MAE_model1 <- mean(errorDFmodel1$fitted - errorDFmodel1$Observed_OR)
+MAPE_model1 <- mean((errorDFmodel1$fitted - errorDFmodel1$Observed_OR)/errorDFmodel1$Observed_OR)
+
+```
+
+
+<br><br>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.align='center'}
+#predicted vs observed plot
+colnames(errorDFmodel1) <- c("Observed", "Predicted")
+plot1 <- ggplot() + 
+  geom_point(data=errorDFmodel1, aes(Observed, Predicted), alpha=.5, color="skyblue4") +
+  stat_smooth(data=errorDFmodel1, aes(Observed, Observed), method = "lm", se = FALSE, size = 1, colour="indianred") + 
+  stat_smooth(data=errorDFmodel1, aes(Observed, Predicted), method = "lm", se = FALSE, size = 1, colour="black") + 
+  labs(title = "Predicted Occupancy Rates as a Function of Observed Occupancy Rates",
+       y="Predicted Occupancy Rates",
+       x="Observed Occupancy Rates") +
+  theme(plot.title = element_text(size = 18,colour = "black"))
+plot1 + theme(legend.position="none") +
+  theme(plot.title = element_text(hjust = 0.5, size=15))+
+  theme(panel.background = element_rect(fill = "grey99",
+                                colour = "gray100",
+                                size = 0.5, linetype = "solid"),
+  panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "white"), 
+  panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "white"))
+
+```
+
+<br><br>
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+#use this regression
+reg1a <- lm(log(orAll+1) ~ log(average_height+1) + seg_length + zoning_code + nation_highway + street_type + tract_id, data=final_group_vars)
+summary(reg1a)
+
+```
+
+<center>
+<font size="5">Map of residuals for model 1</font>
+</center>
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.align='left'}
+#map residuals
+combine <- cbind(final_group_vars, reg1a$fitted.values)%>%
+  mutate(residuals = abs(orAll-reg1a$fitted.values))%>%
+  mutate(residuals2 = residuals*1.5)
+
+combine <- st_transform(combine, crs=4326) 
+
+pal <- colorNumeric(
+  palette = "YlOrBr",
+  domain = combine$residuals2)
+
+pal3 <- colorNumeric(
+  palette = "YlOrBr",
+  domain = combine$residuals)
+
+m <- leaflet() 
+
+m %>%
+  addProviderTiles(providers$Stamen.Toner) %>% 
+  addPolygons(data = combine, weight = 1.5, opacity = 1,
+          color = ~pal(ntile(residuals,4)))%>% 
+  addLegend(data=combine,"bottomright", pal = pal, values = ~residuals,
+            title = "residuals",
+            labFormat = labelFormat(prefix = " "),
+            opacity = 3)
+
+```
+<br>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+#kable table model1
+MAE_model1 <- abs(MAE_model1)
+MAE_model1 <- round(MAE_model1, digits = 2)
+MAPE_model1 <- abs(MAPE_model1)
+MAPE_model1 <- round(MAPE_model1, digits = 2)
+
+model1error <- data.frame(MAE_model1, MAPE_model1)
+colnames(model1error) <- c("MAE_Model 1", "MAPE_Model 1")
+kable(model1error) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 14, full_width = F, position = "center") %>%
+  row_spec(c(1:1), bold = F, color = "white", background = "#A4A8B5")
+
+```
+
+
+<br>
+
+The model has a low MAE and MAPE value and the residuals are relatively not that clustered. Zoning code and neighborhood classification were one of the many variables considered as predictors in this model. These variables helped improve the accuracy of the fit (the R-square was 0.49). However, the model could not be generalized. The parking data available covers only few parts of Seattle and not the whole city. Therefore, performing cross validations was a challenge since both these variables are categorical variables with too many levels. However, despite its lack of generalizability this model was still run since the current app is very specific to Seattle. 
+
+Given, the limitations of the parking dataset, a second model was considered. The two main significant continuous predictors in the first regression model namely average building height and street segment length along with rush hour were used as predictors in this model. The main purpose of the second regression analysis was to test the generalizability of the model. 
+
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+reg2 <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length, data=fin16)
+summary(reg2)
+
+```
+
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+#error comp model2
+errorDFmodel2 <- data.frame(fin16$occupancyRate) 
+colnames(errorDFmodel2) <- c("Observed_OR") 
+errorDFmodel2 <- errorDFmodel2 %>%
+  mutate(fitted = reg2$fitted.values) %>%
+   filter(Observed_OR != 0) 
+
+MAE_model2 <- mean(errorDFmodel2$fitted - errorDFmodel2$Observed_OR)
+MAPE_model2 <- mean((errorDFmodel2$fitted - errorDFmodel2$Observed_OR)/errorDFmodel2$Observed_OR)
+
+
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+reg2a <- lm(log(orAll+1) ~ log(average_height+1) + seg_length, data=final_group_vars)
+summary(reg2a)
+
+```
+
+
+<br><br>
+<center>
+<font size="5">Map of residuals for model 2</font>
+
+</center>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.align='center'}
+#map residuals
+combine2 <- cbind(final_group_vars, reg2a$fitted.values)%>%
+  mutate(residuals = abs(orAll-reg2a$fitted.values))%>%
+  mutate(residuals2 = residuals*1.5)
+
+combine <- st_transform(combine, crs=4326) 
+
+pal <- colorNumeric(
+  palette = "PuBuGn",
+  domain = combine$residuals2)
+
+pal3 <- colorNumeric(
+  palette = "PuBuGn",
+  domain = combine$residuals)
+
+m <- leaflet() 
+
+m %>%
+  addProviderTiles(providers$Stamen.Toner) %>% 
+  addPolygons(data = combine, weight = 1.5, opacity = 1,
+          color = ~pal(ntile(residuals,4)))%>% 
+  addLegend(data=combine,"bottomright", pal = pal, values = ~residuals,
+            title = "residuals",
+            labFormat = labelFormat(prefix = " "),
+            opacity = 3)
+```
+
+
+<br>
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+#kable table model2
+MAE_model2 <- abs(MAE_model2)
+MAE_model2 <- round(MAE_model2, digits = 2)
+MAPE_model2 <- abs(MAPE_model2)
+MAPE_model2 <- round(MAPE_model2, digits = 2)
+
+model2error <- data.frame(MAE_model2, MAPE_model2)
+colnames(model2error) <- c("MAE_Model 2", "MAPE_Model 2")
+kable(model2error) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 14, full_width = F, position = "center") %>%
+  row_spec(c(1:1), bold = F, color = "white", background = "#A4A8B5")
+
+```
+
+<br><br>
+
+Despite having a much lower R-square than the first model, the second model still has a small MAE and MAPE and the residuals are not too clustered. To test the generalizability of the model, a 100-fold cross validation and a spatial cross validation were performed.
+
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+#100 fold cross validation
+partition <- createDataPartition(
+  y = fin16$occupancyRate, 
+  p = .75, list = FALSE)
+training <- fin16[ partition,] #the new training set
+test <- fin16[-partition,]
+
+fitControl <- trainControl(method = "cv", number = 100)
+set.seed(825)
+lmFit <- train(log(occupancyRate+1) ~ log(average_height+1)+seg_length, data = training, 
+               method = "lm", 
+               trControl = fitControl)
+
+rsme <- mean(lmFit$resample[,1])
+r2 <- mean(lmFit$resample[,2])
+rmae <- mean(lmFit$resample[,3])
+
+```
+
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.align='center'}
+maePlot <- ggplot(as.data.frame(lmFit$resample), aes(MAE)) + 
+  geom_histogram(bins=20, alpha=.5,color="skyblue4", fill = "skyblue4") +
+  labs(title = "Histogram of MAE (100-fold cross validation results)",
+    x="Mean Absolute Error",
+       y="Count") 
+
+maePlot + theme(legend.position="none") +
+  theme(plot.title = element_text(hjust = 0.5, size=15))+
+  theme(panel.background = element_rect(fill = "grey99",
+                                colour = "gray100",
+                                size = 0.5, linetype = "solid"),
+  panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "white"), 
+  panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "white"))
+
+```
+
+
+<br>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.align='left'}
+#kable table kfold
+kfold <- data.frame(rsme, r2, rmae)
+colnames(kfold) <- c("Avg_RSME", "Avg_R-Square", "Avg_MAE")
+kable(kfold) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 14, full_width = F, position = "center") %>%
+  row_spec(c(1:1), bold = F, color = "white", background = "#242D49")
+
+
+```
+<br>
+
+The average RMSE and MAE of the 100-fold cross validation is quite low. However, from visually examining the histogram it can be seen that some folds have much larger MAEs than the rest. Ideally we would like to see a tighter fit of the MAE histogram. A spatial cross validation was also performed for four different land-use groups namely commerical, mixed-use, industrial and building height.
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+reg_cm <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + pay_count + dist_detect + slope_percent + pavementcon, data=non_cm)
+summary(reg_cm)
+cm <- cm %>%
+  mutate(occupancyRate = ifelse(occupancyRate == 0, NA, occupancyRate)) %>%
+  na.omit()
+MAE_cm = mean(abs(predict(reg_cm, cm) - cm$occupancyRate))
+MAPE_cm = round(mean(abs(predict(reg_cm, cm) - cm$occupancyRate) / cm$occupancyRate), digits = 2) 
+pred_cm <- data.frame(pred = abs(predict(reg_cm, cm)))
+pred_cm <- pred_cm %>%
+  mutate(obs = cm$occupancyRate,
+         Error = pred - obs,
+         Label = "Commercial")
+MAE_cm
+MAPE_cm
+
+
+#reg with mixeduse
+reg_mu <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + pay_count + dist_detect + slope_percent + pavementcon, data=non_mu)
+summary(reg_mu)
+mu <- mu %>%
+  mutate(occupancyRate = ifelse(occupancyRate == 0, NA, occupancyRate)) %>%
+  na.omit()
+MAE_mu = mean(abs(predict(reg_mu, mu) - mu$occupancyRate))
+MAPE_mu = round(mean(abs(predict(reg_mu, mu) - mu$occupancyRate) / mu$occupancyRate), digits = 2) 
+pred_mu <- data.frame(pred = abs(predict(reg_mu, mu)))
+pred_mu <- pred_mu %>%
+  mutate(obs = mu$occupancyRate,
+         Error = pred - obs,
+         Label = "Mixeduse")
+
+
+#res
+reg_res <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + pay_count + dist_detect + slope_percent + pavementcon, data=non_res)
+summary(reg_res)
+res <- res %>%
+  mutate(occupancyRate = ifelse(occupancyRate == 0, NA, occupancyRate)) %>%
+  na.omit()
+MAE_res = mean(abs(predict(reg_res, res) - res$occupancyRate))
+MAPE_res = round(mean(abs(predict(reg_res, res) - res$occupancyRate) / res$occupancyRate), digits = 2) 
+pred_res <- data.frame(pred = abs(predict(reg_res, res)))
+pred_res <- pred_res %>%
+  mutate(obs = res$occupancyRate,
+         Error = pred - obs,
+         Label = "residential")
+
+#reg with ind
+reg_ind <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + pay_count + dist_detect + slope_percent + pavementcon, data=non_ind)
+summary(reg_ind)
+ind <- ind %>%
+  mutate(occupancyRate = ifelse(occupancyRate == 0, NA, occupancyRate)) %>%
+  na.omit()
+MAE_ind = mean(abs(predict(reg_ind, ind) - ind$occupancyRate))
+MAPE_ind = round(mean(abs(predict(reg_ind, ind) - ind$occupancyRate) / ind$occupancyRate), digits = 2) 
+pred_ind <- data.frame(pred = abs(predict(reg_ind, ind)))
+pred_ind <- pred_ind %>%
+  mutate(obs = ind$occupancyRate,
+         Error = pred - obs,
+         Label = "Industrial")
+
+#reg with ht
+reg_ht <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + pay_count + dist_detect + slope_percent + pavementcon, data=non_ht)
+summary(reg_ht)
+ht <- ht %>%
+  mutate(occupancyRate = ifelse(occupancyRate == 0, NA, occupancyRate)) %>%
+  na.omit()
+MAE_ht = mean(abs(predict(reg_ht, ht) - ht$occupancyRate))
+MAPE_ht = round(mean(abs(predict(reg_ht, ht) - ht$occupancyRate) / ht$occupancyRate), digits = 2) 
+pred_ht <- data.frame(pred = abs(predict(reg_ht, ht)))
+pred_ht <- pred_ht %>%
+  mutate(obs = ht$occupancyRate,
+         Error = pred - obs,
+         Label = "Height")
+
+MAE_cm <- round(MAE_cm, digits = 2)
+MAPE_cm <- round(MAPE_cm, digits = 2)
+MAE_mu <- round(MAE_mu, digits = 2)
+MAPE_mu <- round(MAPE_mu, digits = 2)
+MAE_ind <- round(MAE_ind, digits = 2)
+MAPE_ind <- round(MAPE_ind, digits = 2)
+MAE_ht <- round(MAE_ht, digits = 2)
+MAPE_ht <- round(MAPE_ht, digits = 2)
+
+
+```
+
+<br>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.align='center'}
+spatialRegDFPred <- rbind(pred_cm,pred_mu,pred_ind,pred_ht)
+spaPlot <- ggplot(spatialRegDFPred, aes(x = obs, y = pred)) +
+  geom_point(alpha = .3, color = "skyblue4",size=1 )+  
+  stat_smooth(method = "lm", se = FALSE, size =1, color = "grey69") +
+  facet_wrap( ~ Label, ncol=2) +
+    labs(title = "Spatial Cross-validation Results",
+       y="Predicted Occupancy Rates",
+       x="Observed Occupancy Rates") 
+  
+
+spaPlot + theme(legend.position="none") +
+  theme(plot.title = element_text(hjust = 0.5, size=15))+
+  theme(panel.background = element_rect(fill = "grey99",
+                                colour = "gray100",
+                                size = 0.5, linetype = "solid"),
+  panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "white"), 
+  panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "white"))
+
+
+```
+
+<br>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.align='left'}
+#kable table spatial cross val
+zoneGroupKable <- c("Commercial", "Building Height", "Industrial", "Mixed-use")
+maeGroupKable <- c(MAE_cm, MAE_mu, MAE_ind, MAE_ht)
+mapeGroupKable <- c(MAPE_cm, MAPE_mu, MAPE_ind, MAPE_ht)
+
+spatialCrossVal <- cbind(zoneGroupKable, maeGroupKable, mapeGroupKable)                          
+colnames(spatialCrossVal) <- c("Zone Group", "MAE", "MAPE")
+kable(spatialCrossVal) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 14, full_width = F, position = "center") %>%
+  row_spec(c(1:1), bold = F, color = "white", background = "#242D49") %>%
+  row_spec(c(2:2), bold = F, color = "white", background = "#A4A8B5") %>%
+  row_spec(c(3:3), bold = F, color = "white", background = "#242D49") %>%
+  row_spec(c(4:4), bold = F, color = "white", background = "#A4A8B5")
+
+```
+
+<br>
+
+The results of the spatial cross validation show that the model is not doing a good job of being generalizable over different land-use types. Aside from the results shown above, several other zoning sub-groupings and spatial regressions had been performed earlier. One such grouping involved combining neighborhood classification with the zoning classification system - for instance, Downtown and mixed-use. When spatial cross validation was performed using this grouping system, the error for mixed use and Downtown was very low but for industrial it was very high. This is because, there aren't enough neighborhoods in the study area to perform spatial cross-validation effectively. Most of the land-use in the study area are classified as mixed use and the majority are located in Downtown Seattle. However, we feel that a spatial grouping system that considers neighborhood and land-use together will give us the best spatial cross-validation results. This is because both neighborhood location and type play an important role in determining other factors (for example population density) that affect parking demand and occupancy rates. For instance, a mixed-use area in downtown is usually far more different than a mixed-use area in a relatively residential neighborhood with single family homes.
+
+<br><br>
+
+###5. The App
+
+The current app is designed for a smart phone. However, the flow of the app will work well for a desktop application as well. Users can set up their identification as residents or planners in the opening page, and can then move on to the next page to see the current prediction map. The prediction map allows users to zoom in and check for specific street segments. Users also have the option to make an evaluation of the street segment using the evaluation tool. Planners on the other hand are provided with the additional feature of customizing the prediction values they see by controlling the zoning code variable.
+
+<br>
+
+<center>
+
+![App Design Flow Chart](/Users/Sagari/Desktop/FlowChart.jpg)
+<br><br>
+
+![Home Page](/Users/Sagari/Desktop/App_1.jpg)
+
+<br><br>
+
+![App Design for Planners](/Users/Sagari/Desktop/Planner.jpg)
+
+<br><br>
+
+![App Design for Citizens](/Users/Sagari/Desktop/Citizens.jpg)
+
+</center>
+
+
+<br><br>
+
+###6. Limitations and Conclusions
+The predictive model can be improved further by considering additional data. However, the Seattle annual parking study data currently available does not apply to all the neighborhoods in the city. Therefore, creating a predictive model that is generalizable and with high accuracy is difficult given the limited nature of the dataset. Moreover, the parking dataset only relates to street parking and not off-street parking. The other challenge faced while doing the regression analysis was dealing with scale bias since variables relating to the built environment are often at different scales. In this analysis, the scale of the dependent variable was at the street segment level. However, a lot of the explanatory variables considered were at a larger scale. As a result, the explanatory variables used in this analysis may not have adequately explained all the variations, especially local variations, in the dependent variable. 
+
+We would like to expand the concept of our app to other cities. Therfore, our next step would involve examining parking data from other cities and testing our regression model on new datasets. We would also like to improve the user-friendliness of our app especially the part that is designed for ordinary citizens including the parking evaluation tool. Moreover, as mentioned earlier our current app was designed for a smart phone application. However, this product would also be extremely useful as a desktop app so designing a website would be the direction our project would be heading towards in the future.
+
+
+Please click the [link](https://www.youtube.com/watch?v=GVThyQMAhxM&feature=youtu.be) to access the project video
+
+###7. Appendix (Full Code)
+
+```{r}
+ 
+
+# DATA CLEANING AND WRANGLING
+# Load variables from environment -  (files after joining datasets in ArcGIS) 
+# load("C:/Users/Sagari/Desktop/final_environment.RData")
+# #group by street name - vars file
+# final_group_vars <- final_all_vars %>%
+#   group_by(Unitdsc) %>%
+#   summarise(
+#   total_parking = sum(ttlprkn),
+#   total_vehicle = sum(ttlvhcl),
+#   seg_length = mean(SEGLENG),
+#   pay_count = mean(Count_1),
+#   dist_detect = mean(Distance),
+#   detect_id = paste(DETECTORNA, collapse = ","),
+#   surface = paste(SURFACE, collapse = ","),
+#   nation_highway = paste(NATIONH, collapse = ","),
+#   street_type = paste(STREETT, collapse = ","),
+#   slope_percent = mean(SLOPE_P),
+#   tract_id = paste(NAME, collapse = ","),
+#   total_household = mean(t_HU_20),
+#   total_population = mean(ttl_p_2016),
+#   total_vacancy = mean(ttl_v_2016),
+#   median_hhi = mean(m_HH_I_),
+#   one_car = mean(o__2016),
+#   two_car = mean(tw__2016),
+#   three_car = mean(th__2016),
+#   four_car = mean(f__2016),
+#   zoning_code = paste(ZONING, collapse = ","),
+#   zoning_simple = paste(ZONELUT_DE, collapse = ","),
+#   average_height = mean(Avg_ave_he),
+#   pavementcon = mean(PVMTCON),
+#   trans_class = mean(TRANCLA),
+#             zoneClass = paste(CLASS_DESC, collapse = ",")) %>%
+#   mutate(total_car_owner = one_car + 2*two_car + 3*three_car + 4*four_car,
+#          or = ifelse(total_parking == 0, NA, total_vehicle/total_parking)) %>%
+#   na.omit()
+# 
+# #download parking data and convert
+# #parkingRush <- read.csv("Parking_Rush.csv")
+# #convert 0 or 1 variables to string - filtering out peak and non peak hours directly done on csv file and the loaded
+# toString(parkingRush$RushHour)
+# 
+# #filter 2016
+# parking16 <- parkingRush %>%
+#   filter(Study.Year == "2016")
+# 
+# #wrangle necessary variables
+# parkingSummRush16 <- parking16 %>%
+#   filter(RushHour == "1")%>%
+#   group_by(Unitdesc)%>%
+#   summarise(totalparking = mean(Parking_Spaces),
+#             totalvehicle = mean(Total_Vehicle_Count),
+#             year = mean(Study.Year)) %>%
+#   rename(Unitdsc = Unitdesc)
+# parkingSummRush16 <- parkingSummRush16 %>%
+#   mutate(rush = "1")
+# parkingSumm16NoRush <- parking16 %>%
+#   filter(RushHour == "0")%>%
+#   group_by(Unitdesc)%>%
+#   summarise(totalparking = mean(Parking_Spaces),
+#             totalvehicle = mean(Total_Vehicle_Count),
+#             year = mean(Study.Year)) %>%
+#   rename(Unitdsc = Unitdesc)
+# parkingSumm16NoRush <- parkingSumm16NoRush %>%
+#   mutate(rush = "0")
+# parking16bind <- rbind(parkingSummRush16, parkingSumm16NoRush)
+# parking16bind <- parking16bind %>%
+#   mutate(occupancyRate = ifelse(totalparking == 0, NA, totalvehicle/totalparking)) %>%
+#   na.omit()
+# final16 <- merge(final_group_vars, parking16bind, id="Unitdsc")
+# 
+# #2017 data extract and merge in extra file (in case we need)
+# parking17 <- read.csv("Parking17.csv")
+# toString(parking17$RushHour)
+# parking17rush <- parking17 %>%
+#   filter(RushHour == "1")%>%
+#   group_by(Unitdesc)%>%
+#   summarise(totalparking = mean(Parking_Spaces),
+#             totalvehicle = mean(Total_Vehicle_Count),
+#             year = mean(Study.Year)) %>%
+#   rename(Unitdsc = Unitdesc)
+# parking17rush <- parking17rush %>%
+#   mutate(rush = "1")
+# parking17NoRush <- parking17 %>%
+#   filter(RushHour == "0")%>%
+#   group_by(Unitdesc)%>%
+#   summarise(totalparking = mean(Parking_Spaces),
+#             totalvehicle = mean(Total_Vehicle_Count),
+#             year = mean(Study.Year)) %>%
+#   rename(Unitdsc = Unitdesc)
+# parking17NoRush <- parking17NoRush %>%
+#   mutate(rush = "0")
+# parking17bind <- rbind(parking17NoRush, parking17rush)
+# #merge parking with summary of all other variable dataframe
+# final17 <- merge(final_group_vars, parking17bind, id="Unitdsc")
+# final17OR <- data.frame(final17$Unitdsc, final17$occupancyRate)
+# colnames(final17OR) <- c("Unitdsc", "or17")
+# final2 <- final
+# comp1617 <- merge(final2,final17OR, id="Unitdsc")
+#
+#
+# #wrangle data for spatial cross validation
+# mu1 <- comp1617 %>%
+#   filter(zoning_simple == "Seattle Mixed,Seattle Mixed") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu2 <- comp1617 %>%
+#   filter(zoning_simple == "Downtown Mixed Residential/Residential,Downtown Mixed Residential/Residential") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu3 <- comp1617 %>%
+#   filter(zoning_simple =="Downtown Mixed Commercial,Downtown Mixed Commercial") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu4 <- comp1617 %>%
+#   filter(zoning_simple =="Pioneer Square Mixed,Pioneer Square Mixed") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu5 <- comp1617 %>%
+#   filter(zoning_simple =="Pioneer Square Mixed") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu6 <- comp1617 %>%
+#   filter(zoning_simple =="Pike Market Mixed,Pike Market Mixed") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu7 <- comp1617 %>%
+#   filter(zoning_simple =="Pike Market Mixed") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu8 <- comp1617 %>%
+#   filter(zoning_simple =="Downtown Mixed Commercial") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu9 <- comp1617 %>%
+#   filter(zoning_simple =="Pioneer Square Mixed,Pioneer Square Mixed,Pioneer Square Mixed,Pioneer Square Mixed") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu10 <- comp1617 %>%
+#   filter(zoning_simple =="Downtown Mixed Residential/Residential") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu11 <- comp1617 %>%
+#   filter(zoning_simple =="Downtown Mixed Residential/Residential,Downtown Mixed Residential/Residential,Downtown Mixed Residential/Residential,Downtown Mixed Residential/Residential") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu12 <- comp1617 %>%
+#   filter(zoning_simple =="Pioneer Square Mixed,Pioneer Square Mixed,Pioneer Square Mixed,Pioneer Square Mixed,Pioneer Square Mixed,Pioneer Square Mixed") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu13 <- comp1617 %>%
+#   filter(zoning_simple ==
+#            "Seattle Mixed Residential,Seattle Mixed Residential") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu14 <- comp1617 %>%
+#   filter(zoning_simple ==
+#            "Seattle Mixed,Seattle Mixed,Seattle Mixed,Seattle Mixed") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu15 <- comp1617 %>%
+#   filter(zoning_simple =="Seattle Mixed") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu16 <- comp1617 %>%
+#   filter(zoning_simple ==
+#            "International District Mixed") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu17 <- comp1617 %>%
+#   filter(zoning_simple ==
+#            "Downtown Retail Core") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# mu18 <- comp1617 %>%
+#   filter(zoning_simple ==
+#            "Downtown Retail Core,Downtown Retail Core") %>%
+#   mutate(zoneType = "mixed-use")
+# 
+# 
+# mu <- rbind(mu1,mu2,mu3,mu4,mu5,mu6,mu7,mu8,mu9,mu10,mu11,mu12,mu13,mu14,mu15,mu16,mu17,mu18)
+# 
+# cm1 <- comp1617 %>%
+#   filter(zoning_simple =="Neighborhood Commercial 3") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm2 <- comp1617 %>%
+#   filter(zoning_simple =="Neighborhood Commercial 3,Neighborhood Commercial 3") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm3 <- comp1617 %>%
+#   filter(zoning_simple =="Commercial 1") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm4 <- comp1617 %>%
+#   filter(zoning_simple =="Neighborhood Commercial 3 Incentive") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm5 <- comp1617 %>%
+#   filter(zoning_simple =="Neighborhood Commercial 2") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm6 <- comp1617 %>%
+#   filter(zoning_simple =="Commercial 1,Commercial 1") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm7 <- comp1617 %>%
+#   filter(zoning_simple =="Commercial 2,Commercial 2") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm8 <- comp1617 %>%
+#   filter(zoning_simple =="Neighborhood Commercial 2,Neighborhood Commercial 2") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm9 <- comp1617 %>%
+#   filter(zoning_simple =="Neighborhood Commercial 3 Incentive,Neighborhood Commercial 3 Incentive") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm10 <- comp1617 %>%
+#   filter(zoning_simple =="Downtown Office Core 1") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm11 <- comp1617 %>%
+#   filter(zoning_simple =="Downtown Office Core 2,Downtown Office Core 2") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm12 <- comp1617 %>%
+#   filter(zoning_simple =="Downtown Office Core 2") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm13 <- comp1617 %>%
+#   filter(zoning_simple =="Major Institution Overlay,Major Institution Overlay") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm14 <- comp1617 %>%
+#   filter(zoning_simple =="Major Institution Overlay") %>%
+#   mutate(zoneType = "commercial")
+# 
+# 
+# cm15 <- comp1617 %>%
+#   filter(zoning_simple =="Downtown Harborfront 1,Downtown Harborfront 1") %>%
+#   mutate(zoneType = "commercial")
+# 
+# 
+# cm16 <- comp1617 %>%
+#   filter(zoning_simple =="Downtown Harborfront 2,Downtown Harborfront 2") %>%
+#   mutate(zoneType = "commercial")
+# 
+# cm <- rbind(cm1,cm2,cm3,cm4,cm5,cm6,cm7,cm8,cm9,cm10,cm11,cm12,cm13,cm14,cm15,cm16)
+# 
+# ind1 <-  comp1617 %>%
+#   filter(zoning_simple =="Industrial Commercial") %>%
+#   mutate(zoneType = "industrial")
+# 
+# ind2 <-  comp1617 %>%
+#   filter(zoning_simple =="Industrial Commercial,Industrial Commercial") %>%
+#   mutate(zoneType = "industrial")
+# 
+# ind3 <-  comp1617 %>%
+#   filter(zoning_simple =="International District Mixed,International District Mixed") %>%
+#   mutate(zoneType = "industrial")
+# 
+# ind4 <-  comp1617 %>%
+#   filter(zoning_simple ==
+#            "Industrial Buffer,Industrial Buffer") %>%
+#   mutate(zoneType = "industrial")
+# 
+# ind5 <-  comp1617 %>%
+#   filter(zoning_simple ==
+#            "General Industrial 2,General Industrial 2") %>%
+#   mutate(zoneType = "industrial")
+# 
+# ind <- rbind(ind1,ind2,ind3,ind4,ind5)
+# 
+# res1 <- comp1617 %>%
+#   filter(zoning_simple ==
+#            "Residential Single Family 5000") %>%
+#   mutate(zoneType = "residential")
+# 
+# res2 <- comp1617 %>%
+#   filter(zoning_simple ==
+#            "Residential Single Family 5000,Residential Single Family 5000") %>%
+#   mutate(zoneType = "residential")
+# 
+# ht1 <- comp1617 %>%
+#   filter(zoning_simple =="Lowrise 2,Lowrise 2") %>%
+#   mutate(zoneType = "building height")
+# 
+# ht2 <- comp1617 %>%
+#   filter(zoning_simple =="Lowrise 3,Lowrise 3") %>%
+#   mutate(zoneType = "building height")
+# 
+# ht3 <- comp1617 %>%
+#   filter(zoning_simple =="Lowrise 3") %>%
+#   mutate(zoneType = "building height")
+# 
+# ht4 <- comp1617 %>%
+#   filter(zoning_simple =="Midrise") %>%
+#   mutate(zoneType = "building height")
+# 
+# ht5 <- comp1617 %>%
+#   filter(zoning_simple =="Midrise 1") %>%
+#   mutate(zoneType = "building height")
+# 
+# ht6 <- comp1617 %>%
+#   filter(zoning_simple =="Midrise 1,Midrise 1") %>%
+#   mutate(zoneType = "building height")
+# 
+# ht7 <- comp1617 %>%
+#   filter(zoning_simple =="Highrise") %>%
+#   mutate(zoneType = "building height")
+# 
+# ht8 <- comp1617 %>%
+#   filter(zoning_simple =="Highrise,Highrise") %>%
+#   mutate(zoneType = "building height")
+# 
+# ht <- rbind(ht1,ht2,ht3,ht4,ht5,ht6,ht7,ht8,res1,res2)
+# df2 <- rbind(cm,mu,ind,ht)
+# non_cm <- rbind(mu,res,ind,ht)
+# non_mu <- rbind(cm,res,ind,ht)
+# non_res <- rbind(cm,mu,ind,ht)
+# non_ind <- rbind(cm,mu,res,ht)
+# non_ht <- rbind(cm,mu,res,ind)
+#
+#
+# 
+# DATA ANALYSIS 
+# #plot occupancy rate
+# hist_or <- ggplot(final16, aes(occupancyRate)) + geom_histogram(bins=100, alpha =.6,color="skyblue4", fill="skyblue3") +
+#   labs(title = "Histogram of Observed Parking Occupancy Rates",
+#     x="Occupancy Rate",
+#        y="Count")
+# hist_or + theme(legend.position="none") + 
+#   theme(plot.title = element_text(hjust = 0.5))+
+#   theme(panel.background = element_rect(fill = "grey99",
+#                                 colour = "gray100",
+#                                 size = 0.5, linetype = "solid"),
+#   panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+#                                 colour = "white"), 
+#   panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+#                                 colour = "white"))
+# 
+# 
+# #Scatterplot of independent variables
+# SegmentLength <- data.frame(X = final16$seg_length, Y = final16$occupancyRate) %>%
+#   mutate(title = "Segment Length")
+# PayCountStation <- data.frame(X = final16$pay_count, Y = final16$occupancyRate) %>%
+#   mutate(title = "Pay Count Station")
+# DistanceToSubway <- data.frame(X = final16$dist_detect, Y = final16$occupancyRate) %>%
+#   mutate(title = "Distance To Subway")
+# AverageHeight <- data.frame(X = final16$average_height, Y = final16$occupancyRate) %>%
+#   mutate(title = "Average Height")
+# TotalCarOwnership <- data.frame(X = final16$total_car_owner, Y = final16$occupancyRate) %>%
+#   mutate(title = "Total Car Ownership")
+# Pavement <- data.frame(X = final16$pavementcon, Y = final16$occupancyRate) %>%
+#   mutate(title = "Pavement")
+# 
+# ##facet scatterplot -  independent variables and occupancy rates 
+# #rbind scatterplot variables
+# indScatter <- rbind(SegmentLength,PayCountStation, DistanceToSubway, AverageHeight, TotalCarOwnership, Pavement)
+# #plot
+# scatterPlotInd + labs(title = "Scatterplots showing relationship between dependent variable and \nexplanatory variables",
+#      x="Predictors",
+#        y="Occupancy Rate")+
+#   theme(legend.position="none") + 
+#   theme(plot.title = element_text(hjust = 0.5, size=15)) +
+#   theme(panel.background = element_rect(fill = "grey99",
+#                                 colour = "gray100",
+#                                 size = 0.5, linetype = "solid"),
+#   panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+#                                 colour = "white"), 
+#   panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+#                                 colour = "white"))
+# 
+# 
+# #correlation matrix of continuous variables
+# indVar <- data.frame(final16$seg_length, final16$pay_count, final16$average_height, final16$total_car_owner,
+#                      final16$pavementcon, final16$dist_detect) 
+# colnames(indVar) <- c("segLen", "PaySt", "BlgHt", "CarOwn", 
+#                       "PavLen", "SubDist" )
+# corOutput<-cor(indVar)
+# #corrplot.mixed(corOutput, lower = "number", upper = "ellipse")
+# corrplot(corOutput, order = "hclust",  col = gray.colors(100))
+# 
+# 
+# 
+# # #histogram of observed occupancy by rush our periods
+# histRush <- data.frame(final16$rush, final16$occupancyRate)
+# colnames(histRush) <- c("Rush_Hour", "Observed_Occupancy_Rate")
+# rushPlot  <- ggplot(histRush, aes(Rush_Hour, Observed_Occupancy_Rate)) +
+#   geom_col(fill="skyblue4", alpha = 0.5, width = .5)+
+#   labs(title = "Histogram of Observed Occupancy Rates During Rush Hours\nand Non-rush Hours")
+# rushPlot  + theme(legend.position="none") +
+#   theme(plot.title = element_text(hjust = 0.5))+
+#   theme(panel.background = element_rect(fill = "grey99",
+#                                 colour = "gray100",
+#                                 size = 0.5, linetype = "solid"),
+#   panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+#                                 colour = "white"), 
+#   panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+#                                 colour = "white"))
+# 
+# 
+# #kable independent variables considered for analysis
+# indVarExp <- read.csv("Book1.csv")
+# kable(indVarExp) %>% 
+#   kable_styling(bootstrap_options = c("striped", "hover"), position = "center") %>%
+#    row_spec(c(1:4), bold = F, color = "white", background = "#242D49") %>%
+#   row_spec(c(5:5), bold = F, color = "white", background = "#BEC0CA") %>%
+#   row_spec(c(6:10), bold = F, color = "white", background = "#A4A8B5") 
+#   
+# 
+# #model1 reg
+# reg1 <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + zoning_code + nation_highway + street_type + rush + pay_count + dist_detect + detect_id, data=final16)
+# 
+# 
+# #model 1 error
+# errorDFmodel1 <- data.frame(final16$occupancyRate) 
+# colnames(errorDFmodel1) <- c("Observed_OR") 
+# errorDFmodel1 <- errorDFmodel1 %>%
+#   mutate(fitted = reg1$fitted.values) %>%
+#    filter(Observed_OR != 0) 
+# MAE_model1 <- mean(errorDFmodel1$fitted - errorDFmodel1$Observed_OR)
+# MAPE_model1 <- mean((errorDFmodel1$fitted - errorDFmodel1$Observed_OR)/errorDFmodel1$Observed_OR)
+# 
+# 
+# #predicted vs observed occupancy rates plot
+# colnames(errorDFmodel1) <- c("Observed", "Predicted")
+# plot1 <- ggplot() + 
+#   geom_point(data=errorDFmodel1, aes(Observed, Predicted), alpha=.5, color="skyblue4") +
+#   stat_smooth(data=errorDFmodel1, aes(Observed, Observed), method = "lm", se = FALSE, size = 1, colour="indianred") + 
+#   stat_smooth(data=errorDFmodel1, aes(Observed, Predicted), method = "lm", se = FALSE, size = 1, colour="black") + 
+#   labs(title = "Predicted Occupancy Rates as a Function of Observed Occupancy Rates",
+#        y="Predicted Occupancy Rates",
+#        x="Observed Occupancy Rates") +
+#   theme(plot.title = element_text(size = 18,colour = "black"))
+# plot1 + theme(legend.position="none") +
+#   theme(plot.title = element_text(hjust = 0.5, size=15))+
+#   theme(panel.background = element_rect(fill = "grey99",
+#                                 colour = "gray100",
+#                                 size = 0.5, linetype = "solid"),
+#   panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+#                                 colour = "white"), 
+#   panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+#                                 colour = "white"))
+# 
+# 
+# #map residuals 
+# combine <- cbind(final_group_vars, reg1$fitted.values)%>%
+#   mutate(residuals = abs(orAll-reg1$fitted.values))%>%
+#   mutate(residuals2 = residuals*1.5) #rectify for geometry merge error
+# combine <- st_transform(combine, crs=4326) 
+# pal <- colorNumeric(
+#   palette = "YlOrBr",
+#   domain = combine$residuals2)
+# pal3 <- colorNumeric(
+#   palette = "YlOrBr",
+#   domain = combine$residuals)
+# m <- leaflet() 
+# m %>%
+#   addProviderTiles(providers$Stamen.Toner) %>% 
+#   addPolygons(data = combine, weight = 1.5, opacity = 1,
+#           color = ~pal(ntile(residuals,4)))%>% 
+#   addLegend(data=combine,"bottomright", pal = pal, values = ~residuals,
+#             title = "residuals",
+#             labFormat = labelFormat(prefix = " "),
+#             opacity = 3)
+# 
+# 
+# #kable table model 1
+# MAE_model1 <- abs(MAE_model1)
+# MAE_model1 <- round(MAE_model1, digits = 2)
+# MAPE_model1 <- abs(MAPE_model1)
+# MAPE_model1 <- round(MAPE_model1, digits = 2)
+# model1error <- data.frame(MAE_model1, MAPE_model1)
+# colnames(model1error) <- c("MAE_Model 1", "MAPE_Model 1")
+# kable(model1error) %>%
+#   kable_styling(bootstrap_options = "striped", font_size = 14, full_width = F, position = "center") %>%
+#   row_spec(c(1:1), bold = F, color = "white", background = "#A4A8B5")
+# fin16 <- final16 
+# reg2 <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length, data=fin16)
+# summary(reg2)
+# 
+# 
+# #error comp model2
+# errorDFmodel2 <- data.frame(fin16$occupancyRate) 
+# colnames(errorDFmodel2) <- c("Observed_OR") 
+# errorDFmodel2 <- errorDFmodel2 %>%
+#   mutate(fitted = reg2$fitted.values) %>%
+#    filter(Observed_OR != 0) 
+# MAE_model2 <- mean(errorDFmodel2$fitted - errorDFmodel2$Observed_OR)
+# MAPE_model2 <- mean((errorDFmodel2$fitted - errorDFmodel2$Observed_OR)/errorDFmodel2$Observed_OR)
+# 
+# 
+# #map residuals - model 2 
+# combine2 <- cbind(final_group_vars, reg2$fitted.values)%>%
+#   mutate(residuals = abs(orAll-reg2$fitted.values))%>%
+#   mutate(residuals2 = residuals*1.5) #rectify for geometry merge error
+# combine <- st_transform(combine, crs=4326) 
+# pal <- colorNumeric(
+#   palette = "YlOrBr",
+#   domain = combine$residuals2)
+# pal3 <- colorNumeric(
+#   palette = "YlOrBr",
+#   domain = combine$residuals)
+# m <- leaflet() 
+# m %>%
+#   addProviderTiles(providers$Stamen.Toner) %>% 
+#   addPolygons(data = combine, weight = 1.5, opacity = 1,
+#           color = ~pal(ntile(residuals,4)))%>% 
+#   addLegend(data=combine,"bottomright", pal = pal, values = ~residuals,
+#             title = "residuals",
+#             labFormat = labelFormat(prefix = " "),
+#             opacity = 3)
+# 
+# 
+# #kable table model 2
+# MAE_model2 <- abs(MAE_model2)
+# MAE_model2 <- round(MAE_model2, digits = 2)
+# MAPE_model2 <- abs(MAPE_model2)
+# MAPE_model2 <- round(MAPE_model2, digits = 2)
+# model2error <- data.frame(MAE_model2, MAPE_model2)
+# colnames(model2error) <- c("MAE_Model 2", "MAPE_Model 2")
+# kable(model2error) %>%
+#   kable_styling(bootstrap_options = "striped", font_size = 14, full_width = F, position = "center") %>%
+#   row_spec(c(1:1), bold = F, color = "white", background = "#A4A8B5")
+# 
+# 
+# #100 fold cross validation
+# partition <- createDataPartition(
+#   y = fin16$occupancyRate, 
+#   p = .75, list = FALSE)
+# training <- fin16[ partition,] #the new training set
+# test <- fin16[-partition,]
+# fitControl <- trainControl(method = "cv", number = 100)
+# set.seed(825)
+# lmFit <- train(log(occupancyRate+1) ~ log(average_height+1)+seg_length, data = training, 
+#                method = "lm", 
+#                trControl = fitControl)
+# rsme <- mean(lmFit$resample[,1])
+# r2 <- mean(lmFit$resample[,2])
+# rmae <- mean(lmFit$resample[,3])
+# 
+# 
+# #plot 100-fold cross validation
+# maePlot <- ggplot(as.data.frame(lmFit$resample), aes(MAE)) + 
+#   geom_histogram(bins=20, alpha=.5,color="skyblue4", fill = "skyblue4") +
+#   labs(title = "Histogram of MAE (100-fold cross validation results)",
+#     x="Mean Absolute Error",
+#        y="Count") 
+# maePlot + theme(legend.position="none") +
+#   theme(plot.title = element_text(hjust = 0.5, size=15))+
+#   theme(panel.background = element_rect(fill = "grey99",
+#                                 colour = "gray100",
+#                                 size = 0.5, linetype = "solid"),
+#   panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+#                                 colour = "white"), 
+#   panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+#                                 colour = "white"))
+# 
+# 
+# #kable table kfold
+# kfold <- data.frame(rsme, r2, rmae)
+# colnames(kfold) <- c("Avg_RSME", "Avg_R-Square", "Avg_MAE")
+# kable(kfold) %>%
+#   kable_styling(bootstrap_options = "striped", font_size = 14, full_width = F, position = "center") %>%
+#   row_spec(c(1:1), bold = F, color = "white", background = "#242D49")
+# 
+# 
+# #spatial cross validation with model 2
+# # reg with commercial
+# reg_cm <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + pay_count + dist_detect + slope_percent + pavementcon, data=non_cm)
+# summary(reg_cm)
+# cm <- cm %>%
+#   mutate(occupancyRate = ifelse(occupancyRate == 0, NA, occupancyRate)) %>%
+#   na.omit()
+# MAE_cm = mean(abs(predict(reg_cm, cm) - cm$occupancyRate))
+# MAPE_cm = round(mean(abs(predict(reg_cm, cm) - cm$occupancyRate) / cm$occupancyRate), digits = 2) 
+# pred_cm <- data.frame(pred = abs(predict(reg_cm, cm)))
+# pred_cm <- pred_cm %>%
+#   mutate(obs = cm$occupancyRate,
+#          Error = pred - obs,
+#          Label = "Commercial")
+# #reg with mixeduse
+# reg_mu <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + pay_count + dist_detect + slope_percent + pavementcon, data=non_mu)
+# summary(reg_mu)
+# mu <- mu %>%
+#   mutate(occupancyRate = ifelse(occupancyRate == 0, NA, occupancyRate)) %>%
+#   na.omit()
+# MAE_mu = mean(abs(predict(reg_mu, mu) - mu$occupancyRate))
+# MAPE_mu = round(mean(abs(predict(reg_mu, mu) - mu$occupancyRate) / mu$occupancyRate), digits = 2) 
+# pred_mu <- data.frame(pred = abs(predict(reg_mu, mu)))
+# pred_mu <- pred_mu %>%
+#   mutate(obs = mu$occupancyRate,
+#          Error = pred - obs,
+#          Label = "Mixeduse")
+# #reg with industrial
+# reg_ind <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + pay_count + dist_detect + slope_percent + pavementcon, data=non_ind)
+# summary(reg_ind)
+# ind <- ind %>%
+#   mutate(occupancyRate = ifelse(occupancyRate == 0, NA, occupancyRate)) %>%
+#   na.omit()
+# MAE_ind = mean(abs(predict(reg_ind, ind) - ind$occupancyRate))
+# MAPE_ind = round(mean(abs(predict(reg_ind, ind) - ind$occupancyRate) / ind$occupancyRate), digits = 2) 
+# pred_ind <- data.frame(pred = abs(predict(reg_ind, ind)))
+# pred_ind <- pred_ind %>%
+#   mutate(obs = ind$occupancyRate,
+#          Error = pred - obs,
+#          Label = "Industrial")
+# #reg with building height
+# reg_ht <- lm(log(occupancyRate+1) ~ log(average_height+1) + seg_length + pay_count + dist_detect + slope_percent + pavementcon, data=non_ht)
+# summary(reg_ht)
+# ht <- ht %>%
+#   mutate(occupancyRate = ifelse(occupancyRate == 0, NA, occupancyRate)) %>%
+#   na.omit()
+# MAE_ht = mean(abs(predict(reg_ht, ht) - ht$occupancyRate))
+# MAPE_ht = round(mean(abs(predict(reg_ht, ht) - ht$occupancyRate) / ht$occupancyRate), digits = 2) 
+# pred_ht <- data.frame(pred = abs(predict(reg_ht, ht)))
+# pred_ht <- pred_ht %>%
+#   mutate(obs = ht$occupancyRate,
+#          Error = pred - obs,
+#          Label = "Height")
+# #round values
+# MAE_cm <- round(MAE_cm, digits = 2)
+# MAPE_cm <- round(MAPE_cm, digits = 2)
+# MAE_mu <- round(MAE_mu, digits = 2)
+# MAPE_mu <- round(MAPE_mu, digits = 2)
+# MAE_ind <- round(MAE_ind, digits = 2)
+# MAPE_ind <- round(MAPE_ind, digits = 2)
+# MAE_ht <- round(MAE_ht, digits = 2)
+# MAPE_ht <- round(MAPE_ht, digits = 2)
+# #create dfs
+# spatialRegDFPred <- rbind(pred_cm,pred_mu,pred_ind,pred_ht)
+# spaPlot <- ggplot(spatialRegDFPred, aes(x = obs, y = pred)) +
+#   geom_point(alpha = .3, color = "skyblue4",size=1 )+  
+#   stat_smooth(method = "lm", se = FALSE, size =1, color = "grey69") +
+#   facet_wrap( ~ Label, ncol=2) +
+#     labs(title = "Spatial Cross-validation Results",
+#        y="Predicted Occupancy Rates",
+#        x="Observed Occupancy Rates") 
+# #plot spatial cross validation
+# spaPlot + theme(legend.position="none") +
+#   theme(plot.title = element_text(hjust = 0.5, size=15))+
+#   theme(panel.background = element_rect(fill = "grey99",
+#                                 colour = "gray100",
+#                                 size = 0.5, linetype = "solid"),
+#   panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+#                                 colour = "white"), 
+#   panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+#                                 colour = "white"))
+# 
+# 
+# #kable table spatial cross validation
+# zoneGroupKable <- c("Commercial", "Building Height", "Industrial", "Mixed-use")
+# maeGroupKable <- c(MAE_cm, MAE_mu, MAE_ind, MAE_ht)
+# mapeGroupKable <- c(MAPE_cm, MAPE_mu, MAPE_ind, MAPE_ht)
+# spatialCrossVal <- cbind(zoneGroupKable, maeGroupKable, mapeGroupKable)                          
+# colnames(spatialCrossVal) <- c("Zone Group", "MAE", "MAPE")
+# kable(spatialCrossVal) %>%
+#   kable_styling(bootstrap_options = "striped", font_size = 14, full_width = F, position = "center") %>%
+#   row_spec(c(1:1), bold = F, color = "white", background = "#242D49") %>%
+#   row_spec(c(2:2), bold = F, color = "white", background = "#A4A8B5") %>%
+#   row_spec(c(3:3), bold = F, color = "white", background = "#242D49") %>%
+#   row_spec(c(4:4), bold = F, color = "white", background = "#A4A8B5")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
